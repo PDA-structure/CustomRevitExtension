@@ -53,6 +53,21 @@ DEFAULT_E   = 200e9          # Pa   (D-09)
 DEFAULT_I   = 1e-4           # m^4  (D-09)
 DEFAULT_A   = 0.01           # m^2  (D-09)
 
+def _q4(x):
+    """Quantize to 4 decimal places via string round-trip.
+
+    `round(x, 4)` returns the closest binary double to x rounded — but for
+    most decimals (e.g. 3.048) the closest double is slightly off. CPython 3
+    hides this in json.dumps via shortest-round-trip repr; IronPython 2.7
+    (which Revit/pyRevit uses) does NOT — it serialises the noisy form like
+    `3.04800000001`. Going through `"%.4f" % x` then back through `float()`
+    produces a fresh double that json serialises cleanly.
+
+    Use everywhere coordinates are written to JSON. REVIT-T1-04 demands
+    "at most 4 decimal places" in the exported file, not in memory.
+    """
+    return float("%.4f" % x)
+
 # -- Revit globals -----------------------------------------------------------
 uidoc = __revit__.ActiveUIDocument
 doc   = uidoc.Document
@@ -138,10 +153,10 @@ def _extract_segments(detail_lines):
             continue  # defensive - _collect_detail_lines already filtered
         p0 = curve.GetEndPoint(0)
         p1 = curve.GetEndPoint(1)
-        x0 = round(convert_internal_units(p0.X, get_internal=False, units='m'), 4)
-        y0 = round(convert_internal_units(p0.Y, get_internal=False, units='m'), 4)
-        x1 = round(convert_internal_units(p1.X, get_internal=False, units='m'), 4)
-        y1 = round(convert_internal_units(p1.Y, get_internal=False, units='m'), 4)
+        x0 = _q4(convert_internal_units(p0.X, get_internal=False, units='m'))
+        y0 = _q4(convert_internal_units(p0.Y, get_internal=False, units='m'))
+        x1 = _q4(convert_internal_units(p1.X, get_internal=False, units='m'))
+        y1 = _q4(convert_internal_units(p1.Y, get_internal=False, units='m'))
         # Zero-length check (silent skip per Claude's Discretion)
         if abs(x1 - x0) < TOLERANCE_M and abs(y1 - y0) < TOLERANCE_M:
             continue
@@ -160,7 +175,7 @@ def _get_or_add_node(pt_m, nodes_m, tol=TOLERANCE_M):
     for i, n in enumerate(nodes_m):
         if abs(n[0] - pt_m[0]) < tol and abs(n[1] - pt_m[1]) < tol:
             return i
-    nodes_m.append([round(pt_m[0], 4), round(pt_m[1], 4)])
+    nodes_m.append([_q4(pt_m[0]), _q4(pt_m[1])])
     return len(nodes_m) - 1
 
 # -- Point-to-segment interior test (D-05 T-junction detection) -------------
@@ -332,14 +347,18 @@ def _build_json(nodes_m, members_pairs_0based):
     n_nodes = len(nodes_m)
     n_members = len(members_pairs_0based)
 
-    # Canvas nodes - full UI state objects
+    # Canvas nodes - full UI state objects.
+    # _q4 wrap on every coord defends against IronPython 2.7 json FP noise even
+    # if upstream code is bypassed: realX/realY mirror nodes_m (already _q4),
+    # and the pixel formula `100 + rx*20` re-introduces noise for any rx whose
+    # binary repr is not exact (e.g. 3.048 -> 60.96000000001 on multiply).
     canvas_nodes = []
     for i in range(n_nodes):
-        rx, ry = nodes_m[i][0], nodes_m[i][1]
+        rx, ry = _q4(nodes_m[i][0]), _q4(nodes_m[i][1])
         canvas_nodes.append({
             "id": i,
-            "x": ORIGIN_PX["x"] + rx * GRID_PX,
-            "y": ORIGIN_PX["y"] - ry * GRID_PX,   # Y axis inverted in canvas
+            "x": _q4(ORIGIN_PX["x"] + rx * GRID_PX),
+            "y": _q4(ORIGIN_PX["y"] - ry * GRID_PX),   # Y axis inverted in canvas
             "realX": rx,
             "realY": ry,
         })
