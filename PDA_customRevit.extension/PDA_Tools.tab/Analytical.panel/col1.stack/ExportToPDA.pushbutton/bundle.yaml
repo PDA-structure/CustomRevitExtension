@@ -1,0 +1,3 @@
+title: Export to PDA
+tooltip: "Export detail-line geometry from the active drafting view as canonical PDA JSON (frame2d). Supports and loads are added in the frame2d browser UI."
+author: "paulo@pda-structure.co.uk"
