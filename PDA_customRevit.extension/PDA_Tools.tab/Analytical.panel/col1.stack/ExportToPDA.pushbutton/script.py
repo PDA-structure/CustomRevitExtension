@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import json
+import math
 
 # -- sys.path guard for lib/Snippets (resolves RESEARCH Open Question 4) -----
 # pyRevit auto-adds `lib/` to sys.path, but not necessarily `lib/Snippets/`.
@@ -155,6 +156,144 @@ def _get_or_add_node(pt_m, nodes_m, tol=TOLERANCE_M):
             return i
     nodes_m.append([round(pt_m[0], 4), round(pt_m[1], 4)])
     return len(nodes_m) - 1
+
+# -- Point-to-segment interior test (D-05 T-junction detection) -------------
+def _point_on_segment_interior(p, a, b, tol):
+    """True if point `p` is within `tol` metres of segment `a->b` AND the
+    perpendicular foot lies STRICTLY inside the segment (not at or beyond
+    either endpoint - an endpoint coincidence is handled by the merge step,
+    not by splitting).
+
+    `tol` is in METRES (Chebyshev for node-merge; Euclidean for this
+    perpendicular distance). Parametric threshold scales with segment length
+    (pitfall 10): `t_tol = tol / seg_len`.
+    """
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    dx = bx - ax
+    dy = by - ay
+    seg_len2 = dx * dx + dy * dy
+    if seg_len2 < tol * tol:
+        return False  # degenerate segment - nothing to split
+    t = ((px - ax) * dx + (py - ay) * dy) / seg_len2
+    seg_len = math.sqrt(seg_len2)
+    t_tol = tol / seg_len
+    if t <= t_tol or t >= 1.0 - t_tol:
+        return False  # foot at or past an endpoint (not a T-junction)
+    foot_x = ax + t * dx
+    foot_y = ay + t * dy
+    dist = math.sqrt((px - foot_x) ** 2 + (py - foot_y) ** 2)
+    return dist < tol
+
+# -- Segment-segment interior crossing (D-06 warn, no split) ----------------
+def _segments_cross_interior(a0, a1, b0, b1, tol):
+    """Return (x, y) intersection if segments a0->a1 and b0->b1 cross at an
+    interior point of BOTH (both parametric coords strictly inside
+    (t_tol, 1-t_tol) per-segment), else None. Parallel or colinear -> None."""
+    ax0, ay0 = a0
+    ax1, ay1 = a1
+    bx0, by0 = b0
+    bx1, by1 = b1
+    dax, day = ax1 - ax0, ay1 - ay0
+    dbx, dby = bx1 - bx0, by1 - by0
+    denom = dax * dby - day * dbx
+    if abs(denom) < 1e-12:
+        return None
+    t = ((bx0 - ax0) * dby - (by0 - ay0) * dbx) / denom
+    s = ((bx0 - ax0) * day - (by0 - ay0) * dax) / denom
+    len_a = math.sqrt(dax * dax + day * day)
+    len_b = math.sqrt(dbx * dbx + dby * dby)
+    tol_t_a = tol / len_a
+    tol_t_b = tol / len_b
+    if t <= tol_t_a or t >= 1.0 - tol_t_a:
+        return None
+    if s <= tol_t_b or s >= 1.0 - tol_t_b:
+        return None
+    return (ax0 + t * dax, ay0 + t * day)
+
+# -- Merge endpoints + split at T-junctions + detect crossings (D-05, D-06) --
+def _merge_and_split(segments):
+    """Given a list of ((x0, y0), (x1, y1)) segments in metres, return:
+      - nodes_m : List[List[float]]      - deduplicated node coords
+      - members_pairs : List[List[int]]  - [i_0based, j_0based] pairs, indices into nodes_m
+      - crossings : List[Tuple[int, int, Tuple[float, float]]]
+          - D-06 mid-span crossings (member_idx_a, member_idx_b, (x, y))
+
+    Algorithm (verbatim from RESEARCH.md Algorithms):
+      1. Build initial nodes_m + members_pairs via _get_or_add_node on every endpoint.
+      2. For each node p: for each member (i, j): if p is NOT an endpoint of (i, j)
+         AND _point_on_segment_interior(nodes_m[p], nodes_m[i], nodes_m[j], TOLERANCE_M)
+         is True -> replace (i, j) with (i, p) and (p, j). Restart the inner loop
+         since the list changed.
+      3. After no more splits, walk all unordered pairs of members and call
+         _segments_cross_interior on their node coordinates. Record any hit.
+    """
+    nodes_m = []
+    members_pairs = []
+    for (p0, p1) in segments:
+        i = _get_or_add_node(p0, nodes_m)
+        j = _get_or_add_node(p1, nodes_m)
+        if i != j:  # guard against a segment collapsing into a single node (both endpoints within tol)
+            members_pairs.append([i, j])
+
+    # Step 2: T-junction split pass - restart on every successful split
+    changed = True
+    guard = 0
+    max_iter = 10000  # safety bound; real drafting views are tiny
+    while changed and guard < max_iter:
+        changed = False
+        guard += 1
+        for p_idx in range(len(nodes_m)):
+            p_coords = nodes_m[p_idx]
+            for m_idx in range(len(members_pairs)):
+                i, j = members_pairs[m_idx]
+                if p_idx == i or p_idx == j:
+                    continue
+                if _point_on_segment_interior(p_coords, nodes_m[i], nodes_m[j], TOLERANCE_M):
+                    # Split (i, j) -> (i, p_idx) + (p_idx, j)
+                    members_pairs.pop(m_idx)
+                    members_pairs.append([i, p_idx])
+                    members_pairs.append([p_idx, j])
+                    changed = True
+                    break
+            if changed:
+                break
+
+    # Step 3: Mid-span crossing detection (D-06) - no split, just warn
+    crossings = []
+    n_mem = len(members_pairs)
+    for a_idx in range(n_mem):
+        ai, aj = members_pairs[a_idx]
+        a0 = (nodes_m[ai][0], nodes_m[ai][1])
+        a1 = (nodes_m[aj][0], nodes_m[aj][1])
+        for b_idx in range(a_idx + 1, n_mem):
+            bi, bj = members_pairs[b_idx]
+            # If members share a node, they meet at that node - not a crossing
+            if bi == ai or bi == aj or bj == ai or bj == aj:
+                continue
+            b0 = (nodes_m[bi][0], nodes_m[bi][1])
+            b1 = (nodes_m[bj][0], nodes_m[bj][1])
+            hit = _segments_cross_interior(a0, a1, b0, b1, TOLERANCE_M)
+            if hit is not None:
+                crossings.append((a_idx, b_idx, hit))
+
+    return nodes_m, members_pairs, crossings
+
+# -- Lexicographic node sort (D-08) -----------------------------------------
+def _sort_nodes_lexicographic(nodes_m, members_pairs):
+    """Sort nodes by (x, y) ascending - node 0 is the smallest-x then smallest-y
+    point - and remap member indices. Reproducible across Revit sessions for
+    the same geometry; enables diffable fixtures."""
+    indexed = list(enumerate(nodes_m))
+    indexed.sort(key=lambda pair: (pair[1][0], pair[1][1]))
+    old_to_new = {}
+    new_nodes = []
+    for new_idx, (old_idx, coords) in enumerate(indexed):
+        old_to_new[old_idx] = new_idx
+        new_nodes.append(coords)
+    new_members = [[old_to_new[i], old_to_new[j]] for i, j in members_pairs]
+    return new_nodes, new_members
 
 # -- Main entry point (partial - geometry pipeline + JSON added in plans 05-02 and 05-03) --
 def main():
