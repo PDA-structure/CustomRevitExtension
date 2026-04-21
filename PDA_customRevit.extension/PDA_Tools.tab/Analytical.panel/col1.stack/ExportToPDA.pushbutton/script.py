@@ -39,7 +39,7 @@ from Autodesk.Revit.DB import (
 from Autodesk.Revit.UI import (
     TaskDialog, TaskDialogCommonButtons, TaskDialogResult,
 )
-from pyrevit import forms
+from pyrevit import forms, script
 
 # Reuse from the extension lib (sys.path guard above ensures these work)
 from _units_conversion import convert_internal_units  # noqa: E402
@@ -59,13 +59,18 @@ doc   = uidoc.Document
 app   = __revit__.Application
 
 # -- Session-scoped warning flag (D-16) --------------------------------------
+# pyRevit re-imports this script each click, so module globals don't persist.
+# Earlier approach (setattr on __revit__.Application) raises AttributeError
+# under modern Revit / IronPython — the .NET Application is sealed against
+# dynamic attribute assignment. Use pyRevit's script.set_envvar/get_envvar
+# instead — an in-process registry that lives for the Revit session.
+_SESSION_KEY_WARNING = 'PDA_EXPORT_WARNING_SHOWN'
+
 def _warning_already_shown_this_session():
-    # pyRevit re-imports this script each click, so module globals don't persist.
-    # Persist on __revit__.Application (lives for the Revit session).
-    return getattr(app, '_pda_export_warning_shown', False)
+    return bool(script.get_envvar(_SESSION_KEY_WARNING))
 
 def _mark_warning_shown_this_session():
-    app._pda_export_warning_shown = True
+    script.set_envvar(_SESSION_KEY_WARNING, True)
 
 def _show_2d_only_warning():
     """D-16: pre-run once-per-session TaskDialog with 'Don't show again' checkbox.
