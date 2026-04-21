@@ -323,13 +323,30 @@ def main():
         )
         return
 
-    # TODO(05-02): run geometry pipeline on detail_lines
-    # TODO(05-03): build JSON, save via forms.save_file, show success TaskDialog
-    TaskDialog.Show(
-        "PDA Export",
-        "Scaffold only - collected {0} detail line(s). Geometry pipeline and "
-        "JSON emit land in plans 05-02 and 05-03.".format(len(detail_lines))
-    )
+    # Convert detail lines to (x_m, y_m) endpoint pairs (D-11, D-12, REVIT-T1-04)
+    segments = _extract_segments(detail_lines)
+    if not segments:
+        TaskDialog.Show(
+            "PDA Export",
+            "No straight detail lines found - every line was a zero-length segment."
+        )
+        return
+
+    # Merge coincident endpoints (REVIT-T1-03, D-07), split T-junctions (D-05),
+    # detect mid-span crossings (D-06)
+    nodes_m, members_pairs, crossings = _merge_and_split(segments)
+
+    # Sort nodes lexicographically by (x, y) (D-08) - reproducible output
+    nodes_m, members_pairs = _sort_nodes_lexicographic(nodes_m, members_pairs)
+
+    # TODO(05-03): build JSON payload, save via forms.save_file, show success dialog
+    _msg = "Pipeline output: {0} nodes, {1} members".format(len(nodes_m), len(members_pairs))
+    if crossings:
+        _msg += "; {0} mid-span crossing(s) detected (not split, warning only).".format(len(crossings))
+    else:
+        _msg += "; no mid-span crossings."
+    _msg += "\n\n(JSON emit lands in plan 05-03.)"
+    TaskDialog.Show("PDA Export (plan 05-02 preview)", _msg)
 
 if __name__ == "__main__":
     main()
