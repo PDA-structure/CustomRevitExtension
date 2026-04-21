@@ -116,6 +116,46 @@ def _collect_detail_lines(view):
     ]
     return detail_lines
 
+# -- Segment extraction (D-01, D-11, D-12, REVIT-T1-04) ---------------------
+def _extract_segments(detail_lines):
+    """Return list of ((x0_m, y0_m), (x1_m, y1_m)) tuples in metres, 4-dp-rounded.
+
+    Drops the Z coordinate entirely (D-11 - drafting views are planar). Silently
+    skips any line whose endpoints collapse to within TOLERANCE_M after rounding
+    (zero-length line - Claude's Discretion silent-skip rule).
+    """
+    segs = []
+    for el in detail_lines:
+        curve = el.GeometryCurve
+        if not isinstance(curve, Line):
+            continue  # defensive - _collect_detail_lines already filtered
+        p0 = curve.GetEndPoint(0)
+        p1 = curve.GetEndPoint(1)
+        x0 = round(convert_internal_units(p0.X, get_internal=False, units='m'), 4)
+        y0 = round(convert_internal_units(p0.Y, get_internal=False, units='m'), 4)
+        x1 = round(convert_internal_units(p1.X, get_internal=False, units='m'), 4)
+        y1 = round(convert_internal_units(p1.Y, get_internal=False, units='m'), 4)
+        # Zero-length check (silent skip per Claude's Discretion)
+        if abs(x1 - x0) < TOLERANCE_M and abs(y1 - y0) < TOLERANCE_M:
+            continue
+        segs.append(((x0, y0), (x1, y1)))
+    return segs
+
+# -- Endpoint-merge / node deduplication (D-07, REVIT-T1-03) ----------------
+def _get_or_add_node(pt_m, nodes_m, tol=TOLERANCE_M):
+    """Return 0-based index of an existing node within `tol` metres (Chebyshev),
+    else append (4-dp-rounded) and return the new index.
+
+    Chebyshev (Linf) tolerance matches REVIT-T1-03 literally: "within 1mm" is
+    satisfied when both |dx| < tol AND |dy| < tol. Simpler than Euclidean and
+    consistent with the legacy exporter.
+    """
+    for i, n in enumerate(nodes_m):
+        if abs(n[0] - pt_m[0]) < tol and abs(n[1] - pt_m[1]) < tol:
+            return i
+    nodes_m.append([round(pt_m[0], 4), round(pt_m[1], 4)])
+    return len(nodes_m) - 1
+
 # -- Main entry point (partial - geometry pipeline + JSON added in plans 05-02 and 05-03) --
 def main():
     view = uidoc.ActiveView
