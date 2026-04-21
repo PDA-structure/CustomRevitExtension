@@ -39,6 +39,7 @@ from Autodesk.Revit.DB import (
 from Autodesk.Revit.UI import (
     TaskDialog, TaskDialogCommonButtons, TaskDialogResult,
 )
+from pyrevit import forms
 
 # Reuse from the extension lib (sys.path guard above ensures these work)
 from _units_conversion import convert_internal_units  # noqa: E402
@@ -434,14 +435,31 @@ def main():
     # Sort nodes lexicographically by (x, y) (D-08) - reproducible output
     nodes_m, members_pairs = _sort_nodes_lexicographic(nodes_m, members_pairs)
 
-    # TODO(05-03): build JSON payload, save via forms.save_file, show success dialog
-    _msg = "Pipeline output: {0} nodes, {1} members".format(len(nodes_m), len(members_pairs))
+    # Build canonical JSON payload (REVIT-T1-01)
+    payload = _build_json(nodes_m, members_pairs)
+
+    # D-13: Save-As dialog - pre-populate with sanitised view name
+    default_name = _sanitise_filename(view.Name) + '_pda'
+    save_path = forms.save_file(file_ext='json', default_name=default_name)
+    if not save_path:
+        return  # user cancelled - do NOT write a file (D-13 / D-15 fail-safe)
+
+    # Write JSON (indent=2 for human-readable diff; ensure_ascii=True to avoid
+    # IronPython 2.7 unicode-write issues - pitfall 9)
+    with open(save_path, 'w') as f:
+        json.dump(payload, f, indent=2, ensure_ascii=True)
+
+    # D-14: Success TaskDialog - counts + full path + optional crossings warning
+    success_msg = "Exported {0} nodes, {1} members to:\n{2}".format(
+        len(nodes_m), len(members_pairs), save_path
+    )
     if crossings:
-        _msg += "; {0} mid-span crossing(s) detected (not split, warning only).".format(len(crossings))
-    else:
-        _msg += "; no mid-span crossings."
-    _msg += "\n\n(JSON emit lands in plan 05-03.)"
-    TaskDialog.Show("PDA Export (plan 05-02 preview)", _msg)
+        success_msg += (
+            "\n\nWarning: {0} mid-span crossing(s) detected and NOT split - "
+            "add the connection node manually in the frame2d UI if intended."
+            .format(len(crossings))
+        )
+    TaskDialog.Show("PDA Export Complete", success_msg)
 
 if __name__ == "__main__":
     main()
