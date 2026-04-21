@@ -295,6 +295,101 @@ def _sort_nodes_lexicographic(nodes_m, members_pairs):
     new_members = [[old_to_new[i], old_to_new[j]] for i, j in members_pairs]
     return new_nodes, new_members
 
+# -- Filename sanitisation (D-13) -------------------------------------------
+def _sanitise_filename(name):
+    """Strip/replace filesystem-unsafe chars in the Revit view name. Falls back
+    to literal 'view' if the result is empty (all chars stripped).
+
+    Mitigates threat T-05-11 (path traversal) by removing path separators,
+    wildcards, and whitespace before the string reaches the Save-As dialog's
+    default filename. User still confirms final path via the dialog itself.
+    """
+    cleaned = re.sub(r'[\\/:*?"<>|\s]+', '_', name).strip('_')
+    return cleaned or 'view'
+
+# -- JSON payload builder (REVIT-T1-01, REVIT-T1-04, D-09, D-10) ------------
+def _build_json(nodes_m, members_pairs_0based):
+    """Return a dict matching both Frame2DRequest (Pydantic model in
+    api_server/app.py) AND the frame2d UI Load handler's canvas.* contract
+    (ui/frame2d/script.js ~lines 1549-1645).
+
+    Tier 1 emits geometry + uniform default E/I/A only. Supports, loads,
+    spring-DoF, pin releases, per-member overrides are all empty - user adds
+    them in the frame2d UI after loading.
+
+    Critical invariants (see RESEARCH.md Common Pitfalls 1-4):
+    - `solver` MUST be the exact string "frame2d" (UI rejects "frame_v2").
+    - `canvas.origin` MUST be non-null or nodes render at (0, 0).
+    - Top-level `members` is 1-based; `canvas.members[*].start/end` is 0-based.
+    - Every canvas.members[i] key must exist even when null/false.
+    """
+    n_nodes = len(nodes_m)
+    n_members = len(members_pairs_0based)
+
+    # Canvas nodes - full UI state objects
+    canvas_nodes = []
+    for i in range(n_nodes):
+        rx, ry = nodes_m[i][0], nodes_m[i][1]
+        canvas_nodes.append({
+            "id": i,
+            "x": ORIGIN_PX["x"] + rx * GRID_PX,
+            "y": ORIGIN_PX["y"] - ry * GRID_PX,   # Y axis inverted in canvas
+            "realX": rx,
+            "realY": ry,
+        })
+
+    # Canvas members - full UI state objects (0-based start/end, all extras null/false)
+    canvas_members = []
+    for i in range(n_members):
+        s, e = members_pairs_0based[i][0], members_pairs_0based[i][1]
+        canvas_members.append({
+            "id": i,
+            "start": s,
+            "end": e,
+            "type": "beam",
+            "pinLeft": False,
+            "pinRight": False,
+            "udl": None,
+            "udl_x": None,
+            "E_override": None,
+            "I_override": None,
+            "A_override": None,
+        })
+
+    return {
+        "schema_version": "1.0",
+        "solver": "frame2d",
+
+        # Flat arrays - mirror Frame2DRequest for direct POST to /solve/frame2d
+        "nodes": nodes_m,
+        "members": [[s + 1, e + 1] for (s, e) in members_pairs_0based],  # 1-based
+        "ENForces": [[0, 0] for _ in range(n_members)],
+        "ENMoments": [[0, 0] for _ in range(n_members)],
+        "forceVector": [0] * (n_nodes * 3),  # 3 DOF per node (frame2d)
+        "E": DEFAULT_E,
+        "I": DEFAULT_I,
+        "A": DEFAULT_A,
+        "bars": [],
+        "beamPinLeft": [],
+        "beamPinRight": [],
+        "restrainedDoF": [],
+        "pinDoF": [],
+        "springDoF": [],
+        "springStiffness": [],
+        "udl_x": [0] * n_members,
+
+        # Canvas block - UI Load handler reads geometry from here, not flat arrays
+        "canvas": {
+            "origin": ORIGIN_PX,
+            "nodes": canvas_nodes,
+            "members": canvas_members,
+            "supports": {},
+            "nodeLoads": [],
+            "udl": [],
+            "memberOverrides": {},
+        },
+    }
+
 # -- Main entry point (partial - geometry pipeline + JSON added in plans 05-02 and 05-03) --
 def main():
     view = uidoc.ActiveView
