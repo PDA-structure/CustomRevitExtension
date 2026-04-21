@@ -26,9 +26,9 @@ import math
 # pyRevit's default path behaviour across versions.
 # Script location: <ext_root>/PDA_Tools.tab/Analytical.panel/col1.stack/ExportToPDA.pushbutton/script.py
 # Target:          <ext_root>/lib/Snippets/
-# Relative hops up: ../../../../../  (ExportToPDA.pushbutton -> col1.stack -> Analytical.panel -> PDA_Tools.tab -> ext_root)
+# Relative hops up: ../../../../  (ExportToPDA.pushbutton -> col1.stack -> Analytical.panel -> PDA_Tools.tab -> ext_root)
 _here = os.path.dirname(os.path.abspath(__file__))
-_snippets_path = os.path.normpath(os.path.join(_here, '..', '..', '..', '..', '..', 'lib', 'Snippets'))
+_snippets_path = os.path.normpath(os.path.join(_here, '..', '..', '..', '..', 'lib', 'Snippets'))
 if _snippets_path not in sys.path:
     sys.path.insert(0, _snippets_path)
 
