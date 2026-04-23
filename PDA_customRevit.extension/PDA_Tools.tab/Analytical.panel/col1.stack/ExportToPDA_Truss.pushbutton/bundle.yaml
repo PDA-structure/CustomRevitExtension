@@ -1,0 +1,3 @@
+title: Export to PDA Truss
+tooltip: "Export detail-line geometry from the active drafting view as canonical PDA JSON (truss2d). Supports and loads are added in the truss2d browser UI."
+author: "paulo@pda-structure.co.uk"
