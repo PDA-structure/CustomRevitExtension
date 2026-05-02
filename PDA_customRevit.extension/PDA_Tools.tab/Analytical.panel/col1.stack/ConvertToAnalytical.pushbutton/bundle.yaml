@@ -1,0 +1,3 @@
+title: Convert to Analytical
+tooltip: "Convert selected physical structural columns, beams, and bracings into AnalyticalMember instances. Idempotent -- already-converted elements are skipped."
+author: "paulo@pda-structure.co.uk"
