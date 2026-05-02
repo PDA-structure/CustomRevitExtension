@@ -170,16 +170,76 @@ def _verify_section_and_material(doc, analytical_id):
         return False
     return has_section and has_material
 
-# -- Main entry point (PLACEHOLDER -- Plan 7-02 wires conversion) ------------
+# -- Batch driver (D-06 TransactionGroup + per-element Transaction) ----------
+def run_batch(doc, physical_ids):
+    """D-06 transactional batch with isolated per-element rollback.
+    Outer TransactionGroup 'PDA: Convert to Analytical' wraps per-element
+    Transaction instances. Single failed element rolls back its own tx and
+    the group continues. Group ends with Assimilate() (Pitfall 5: NOT Commit)
+    so the engineer sees one undo step covering the whole batch.
+
+    Returns (converted, already, skips) where:
+      converted: list[ElementId] -- physical ids whose conversion succeeded
+      already:   list[ElementId] -- physical ids that were already associated (D-03)
+      skips:     list[(ElementId, reason: str, role: str|None)] -- skip log
+
+    Skip reasons (D-07, with D-11 unsupported-geometry addition):
+      'missing-location', 'unsupported-geometry', 'missing-section',
+      'generation-failed', 'other-error'.
+    ('already-associated' is reported via the `already` list, NOT skips, per D-03.)"""
+    converted, already, skips = [], [], []
+    tg = TransactionGroup(doc, "PDA: Convert to Analytical")
+    tg.Start()
+    try:
+        for pid in physical_ids:
+            # D-03: already-associated is a non-error skip on a distinct line.
+            if _is_already_associated(doc, pid):
+                already.append(pid)
+                continue
+            role = _structural_type(doc, pid)
+            tx = Transaction(doc, "Convert element {0}".format(pid.IntegerValue))
+            tx.Start()
+            try:
+                new_id = _convert_one(doc, pid)
+                if not _verify_section_and_material(doc, new_id):
+                    # D-10: read-back BEFORE commit -- rollback the orphan analytical member.
+                    tx.RollBack()
+                    skips.append((pid, 'missing-section', role))
+                    continue
+                if tx.Commit() != TransactionStatus.Committed:
+                    skips.append((pid, 'generation-failed', role))
+                    continue
+                converted.append(pid)
+            except ValueError as ve:
+                # _convert_one raised ValueError(skip_reason) from _derive_curve.
+                if tx.HasStarted() and not tx.HasEnded():
+                    tx.RollBack()
+                skips.append((pid, str(ve), role))
+            except Exception as exc:
+                # Anything else: typed as 'other-error', carry str(exc) for diagnostics.
+                if tx.HasStarted() and not tx.HasEnded():
+                    tx.RollBack()
+                skips.append((pid, 'other-error', role))
+        tg.Assimilate()  # CRITICAL: Assimilate, NOT Commit (Pitfall 5)
+    except Exception:
+        # Total-batch failure: roll back ALL inner transactions (committed or not).
+        if tg.HasStarted() and not tg.HasEnded():
+            tg.RollBack()
+        raise
+    return converted, already, skips
+
+# -- Main entry point (Plan 7-02 wired; Plan 7-03 replaces with _emit_summary)
 def main():
     physical_ids = _resolve_input(uidoc, doc)
     if not physical_ids:
         return  # _resolve_input handled user-facing TaskDialog (or silent Escape)
-    # Plan 7-02 replaces this placeholder with run_batch + _emit_summary.
-    TaskDialog.Show(
-        "PDA Convert",
-        "Plan 7-01 placeholder: {0} element(s) accepted by selection filter. Conversion lands in Plan 7-02.".format(len(physical_ids))
+    converted, already, skips = run_batch(doc, physical_ids)
+    # Plan 7-03 replaces this with _emit_summary() (TaskDialog + Output Window).
+    summary = "converted: {0} | already-associated: {1} | skipped (errors): {2} | total: {3}".format(
+        len(converted), len(already), len(skips),
+        len(converted) + len(already) + len(skips),
     )
+    TaskDialog.Show("PDA: Convert to Analytical", summary)
 
 if __name__ == "__main__":
     main()
