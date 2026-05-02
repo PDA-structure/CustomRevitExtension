@@ -135,6 +135,41 @@ def _structural_type(doc, physical_id):
     except AttributeError:
         return 'Unknown'
 
+# -- Per-element conversion (D-11 reversed: Create + AddAssociation) ----------
+def _convert_one(doc, physical_id):
+    """D-11 (reversed 2026-04-29): AnalyticalMember.Create + AddAssociation.
+    The previously-assumed single-call factory does NOT exist as a public API
+    method; this two-call pattern is the only verifiable physical-to-analytical
+    conversion path (verified by absence: revitapidocs 2024/2025/2025.3, GitHub,
+    Autodesk Help). Caller MUST have an active Transaction. Returns the new
+    analytical ElementId. Raises ValueError(skip_reason) when curve derivation
+    fails -- caller routes the skip via its except clause."""
+    elem = doc.GetElement(physical_id)
+    curve, skip_reason = _derive_curve(elem)
+    if skip_reason is not None:
+        raise ValueError(skip_reason)
+    analytical = AnalyticalMember.Create(doc, curve)
+    manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
+    manager.AddAssociation(analytical.Id, physical_id)
+    return analytical.Id
+
+# -- Read-back verification (D-10; Pitfall 10) --------------------------------
+def _verify_section_and_material(doc, analytical_id):
+    """D-10: confirm section + material associated post-AddAssociation, pre-commit.
+    AddAssociation propagates section/material from the physical element automatically;
+    a null result here means the source element had nothing to propagate.
+    CRITICAL: this MUST be called BEFORE tx.Commit(); once committed, only a fresh
+    transaction can roll back the orphan analytical member (Pitfall 10)."""
+    am = doc.GetElement(analytical_id)
+    if am is None:
+        return False
+    try:
+        has_section  = am.SectionTypeId  != ElementId.InvalidElementId
+        has_material = am.MaterialId     != ElementId.InvalidElementId
+    except AttributeError:
+        return False
+    return has_section and has_material
+
 # -- Main entry point (PLACEHOLDER -- Plan 7-02 wires conversion) ------------
 def main():
     physical_ids = _resolve_input(uidoc, doc)
