@@ -228,18 +228,51 @@ def run_batch(doc, physical_ids):
         raise
     return converted, already, skips
 
-# -- Main entry point (Plan 7-02 wired; Plan 7-03 replaces with _emit_summary)
+# -- Diagnostic emission (D-08 dual surface; D-09 always shown) --------------
+def _emit_summary(converted, already, skips):
+    """D-08 + D-09. Two surfaces, both always run.
+
+    Surface 1 (Output Window, only if there are skips): markdown table with
+    clickable element links via output.linkify; columns: Element, Reason,
+    Structural Type. Engineer clicks the link, Revit highlights the element.
+
+    Surface 2 (TaskDialog, always): one-line summary
+    'converted: N | already-associated: M | skipped (errors): K | total: T'
+    with already-associated as a distinct line per D-03. Body text varies by
+    whether there are skips. ASCII-only per Pitfall 9."""
+    output = script.get_output()
+    output.set_title("PDA: Convert to Analytical")
+
+    if skips:
+        rows = [
+            [output.linkify(eid), reason, str(role) if role else '-']
+            for (eid, reason, role) in skips
+        ]
+        output.print_table(
+            table_data=rows,
+            title='Conversion Skips',
+            columns=['Element', 'Reason', 'Structural Type'],
+        )
+
+    summary = "converted: {0} | already-associated: {1} | skipped (errors): {2} | total: {3}".format(
+        len(converted), len(already), len(skips),
+        len(converted) + len(already) + len(skips),
+    )
+    td = TaskDialog("PDA: Convert to Analytical")
+    td.MainInstruction = summary
+    if skips:
+        td.MainContent = "{0} element(s) were skipped. See the pyRevit Output window for clickable links to each.".format(len(skips))
+    else:
+        td.MainContent = "All elements processed successfully."
+    td.Show()
+
+# -- Main entry point --------------------------------------------------------
 def main():
     physical_ids = _resolve_input(uidoc, doc)
     if not physical_ids:
         return  # _resolve_input handled user-facing TaskDialog (or silent Escape)
     converted, already, skips = run_batch(doc, physical_ids)
-    # Plan 7-03 replaces this with _emit_summary() (TaskDialog + Output Window).
-    summary = "converted: {0} | already-associated: {1} | skipped (errors): {2} | total: {3}".format(
-        len(converted), len(already), len(skips),
-        len(converted) + len(already) + len(skips),
-    )
-    TaskDialog.Show("PDA: Convert to Analytical", summary)
+    _emit_summary(converted, already, skips)
 
 if __name__ == "__main__":
     main()
