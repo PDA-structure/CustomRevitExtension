@@ -77,6 +77,64 @@ def _resolve_input(uidoc, doc):
         return []
     return [r.ElementId for r in refs]
 
+# -- Idempotency precheck (D-03; Pitfall 1) ----------------------------------
+def _is_already_associated(doc, physical_id):
+    """REVIT-CONVERT-03 idempotency precheck.
+    Returns True if the physical element already has an associated analytical member.
+    CRITICAL: GetAssociatedElementId returns ElementId.InvalidElementId, NOT None (Pitfall 1)."""
+    manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
+    if manager is None:
+        return False  # first call in document -- no manager yet => no associations
+    associated_id = manager.GetAssociatedElementId(physical_id)
+    return associated_id != ElementId.InvalidElementId
+
+# -- Curve derivation (Pitfall 3; column vs beam branching) ------------------
+def _derive_curve(elem):
+    """Bounded curve for AnalyticalMember.Create. Returns (curve, None) on success
+    or (None, skip_reason) on geometry failure. skip_reason is one of:
+    'missing-location', 'unsupported-geometry'."""
+    loc = elem.Location
+    if isinstance(loc, LocationCurve):
+        curve = loc.Curve
+        if curve is None or not curve.IsBound:
+            return None, 'unsupported-geometry'
+        return curve, None
+    if isinstance(loc, LocationPoint):
+        # Column: derive vertical line from base level + top level (Pitfall 3)
+        base_param = elem.LookupParameter('Base Level')
+        top_param  = elem.LookupParameter('Top Level')
+        if base_param is None or top_param is None:
+            return None, 'missing-location'
+        base_level_id = base_param.AsElementId()
+        top_level_id  = top_param.AsElementId()
+        if base_level_id == ElementId.InvalidElementId or top_level_id == ElementId.InvalidElementId:
+            return None, 'missing-location'
+        base_level = doc.GetElement(base_level_id)
+        top_level  = doc.GetElement(top_level_id)
+        if base_level is None or top_level is None:
+            return None, 'missing-location'
+        p0 = XYZ(loc.Point.X, loc.Point.Y, base_level.Elevation)
+        p1 = XYZ(loc.Point.X, loc.Point.Y, top_level.Elevation)
+        if p0.IsAlmostEqualTo(p1):
+            return None, 'unsupported-geometry'
+        return Line.CreateBound(p0, p1), None
+    return None, 'missing-location'
+
+# -- StructuralType capture (D-02; Pitfall 2) --------------------------------
+def _structural_type(doc, physical_id):
+    """D-02: capture StructuralType for diagnostic logging. Returns string name of
+    the enum value, or 'Unknown' if the element has no StructuralType attribute.
+    Pitfall 2: real enum members are {NonStructural, Beam, Brace, Column, Footing, UnknownFraming}.
+    There is NO 'Girder' member."""
+    elem = doc.GetElement(physical_id)
+    if elem is None:
+        return 'Unknown'
+    try:
+        st = elem.StructuralType
+        return str(st)
+    except AttributeError:
+        return 'Unknown'
+
 # -- Main entry point (PLACEHOLDER -- Plan 7-02 wires conversion) ------------
 def main():
     physical_ids = _resolve_input(uidoc, doc)
