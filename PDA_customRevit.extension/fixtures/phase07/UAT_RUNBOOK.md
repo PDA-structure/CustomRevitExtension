@@ -170,44 +170,33 @@ The body reads "All elements processed successfully." because there are no actua
 - [ ] `already-associated` is a distinct line item -- not folded into the error count
 - [ ] No `Conversion Skips` table appears in the Output Window
 
-## Tier 1 Round-Trip (D-13, ROADMAP success criterion 4)
+## Tier 1 Round-Trip (D-13, ROADMAP success criterion 4) -- DEFERRED TO PHASE 8
 
-**Purpose:** Prove the analytical model produced by Phase 7's ConvertToAnalytical is well-formed enough for the existing Phase 5 / v1.2 Tier 1 ExportToPDA pipeline -- which means downstream tooling (frame2d UI, /solve/frame2d API) can consume it.
+**Status:** Reframed during Plan 07-03 execution (2026-05-06). The originally-specified Tier 1 round-trip via Phase 5 ExportToPDA does NOT exercise Phase 7's analytical metadata, so it cannot validate Phase 7 deliverables. The empirical round-trip exercising section + material flows through Phase 8 Tier 2 export -- not Phase 5 Tier 1.
 
-This is the gating round-trip for Phase 7 closure.
+### Why the original Tier 1 round-trip does not test Phase 7
 
-### Procedure
+Phase 5 `ExportToPDA` reads **detail lines from the active view** (not analytical members) and emits JSON with **hardcoded `DEFAULT_E`, `DEFAULT_I`, `DEFAULT_A`** (script.py lines 386-396, 447-463). Confirmed by code inspection during Plan 07-03 Task 4:
 
-1. Reopen `phase07_minimal_frame.rvt`. Run `Convert to Analytical` on all 7 elements (or use Fixture 3 which already has the AnalyticalMembers).
-2. Switch to a drafting view that contains detail-line representations of the analytical model. If no such drafting view exists in the fixture, author one:
-   - Create a drafting view at appropriate scale.
-   - Trace each AnalyticalMember as a detail line in the drafting view (Phase 5 ExportToPDA reads detail lines on a drafting view, not analytical members directly -- this matches the Phase 5 contract).
-3. Run `PDA_Tools > Analytical > col1.stack > Export to PDA` (the Phase 5 Tier 1 frame exporter) on that drafting view.
-4. Save the resulting canonical PDA JSON to a known path (e.g., `~/Documents/UAT/phase07_minimal_frame.json` on the Windows host).
-5. Move the JSON to a host that runs the PDA frame2d browser UI (or POST it directly to the API):
-   - Browser UI path: open `ui/frame2d/index.html`; load the JSON; click Solve.
-   - API path: `curl -X POST http://localhost:8000/solve/frame2d -H "Content-Type: application/json" -d @phase07_minimal_frame.json`.
-6. Inspect the returned reactions (FG vector at the restrained DOFs) and member forces.
+- `_collect_detail_lines(view)` filters `OST_Lines` category -- AnalyticalMembers are not in this category.
+- `_build_json(...)` writes `"E": DEFAULT_E`, `"I": DEFAULT_I`, `"A": DEFAULT_A` regardless of any document state.
+- `"forceVector": [0] * (n_nodes * 3)` is always zero.
 
-### Expected outcome
+Therefore, running Phase 5 ExportToPDA on a Phase-7-converted document produces JSON identical to running it on a vanilla document with the same detail lines. Phase 7's section + material assignments are invisible to Phase 5. The round-trip would prove only that the document remains well-formed for Phase 5 (a no-op, given Phase 7 only adds AnalyticalMembers in a separate category).
 
-Reactions and member forces match the analytical reference for the minimal-frame geometry within the same tolerance Phase 5 / Phase 4 UAT used (typically 1e-3 relative tolerance for displacements; reactions exact to within float roundoff for statically determinate frames).
+### What still validates ROADMAP success criterion 4
 
-The reference values can be hand-calculated for the minimal frame:
-- 4 columns + 2 beams + 1 brace under the loading the engineer applies in step 4. (If the fixture has no nodal loads, FG should be zero everywhere except at supports under self-weight, depending on whether self-weight is exported.)
-- For a determinate frame with simple support conditions, vertical reactions should sum to the total applied load.
+Phase 7 success criterion 4 ("Revit's analytical model is well-formed enough that a downstream Tier 2 exporter -- Phase 8 -- can read it") is empirically validated by:
 
-The point of this check is not to prove the solver -- the solver is already tested in Phase 4. The point is to prove the analytical-member geometry that ConvertToAnalytical produces is consumable by the round-trip without geometry corruption (e.g., no zero-length members, no missing material/section).
+- **Fixture 1 step 6** -- analytical browser spot-check confirms `SectionTypeId` and `MaterialId` non-null on every AnalyticalMember (the explicit-assignment fix from sibling-repo commit `9342288`).
+- **Fixture 3** -- 1:1 physical-analytical association intact post-conversion; idempotent re-run produces no duplicates (`already-associated: 7`).
+- **Single-undo at scale** -- Pitfall 5 (TransactionGroup.Assimilate) holds on Fixture 1 (7 elements) and Fixture 2 (18 elements). Per-element-Transaction rollback works.
 
-### Pass criteria
+These three evidence points together prove the analytical output is well-formed for Phase 8's Tier 2 reader. Phase 8 Tier 2 export will read `AnalyticalMember.SectionTypeId` and `MaterialId` directly and emit them into the JSON -- that is the empirical round-trip for Phase 7's deliverables.
 
-- [ ] Phase 5 ExportToPDA produces a valid JSON with the expected node and member counts (4 columns + 2 beams + 1 brace -> 6 nodes for a portal-style frame, or 7 nodes if the brace adds a free vertex; member count matches geometry)
-- [ ] frame2d UI loads the JSON without errors
-- [ ] /solve/frame2d returns 200 OK with reactions in `FG` and member forces in `member_forces`
-- [ ] Reactions match the hand-calculated reference within tolerance
-- [ ] No NaN, inf, or zero-everywhere displacement vector
+### Memory pointer
 
-If this fails, capture the JSON and the failure mode in the resume signal (e.g., "ExportToPDA produced JSON but solve returned singular matrix" -- that points to a geometry/topology issue that ConvertToAnalytical introduced).
+See `revit_phase5_export_uses_detail_lines_only.md` -- captures the architectural finding so Phase 8 planning starts from the correct premise.
 
 ## Configurable Filter Walkthrough (REVIT-CONVERT-01, ROADMAP success criterion 5)
 
@@ -259,7 +248,7 @@ Phase 7 UAT pass -- all 5 criteria green
 Fixture 1: converted: 7 | already-associated: 0 | skipped (errors): 0 | total: 7. Single undo OK.
 Fixture 2: converted: <N> | already-associated: 0 | skipped (errors): 0 | total: <N>. Multi-storey positive path; column elevations across both storeys spot-checked. Skip taxonomy verified by code review (Revit UI prevents authoring deliberately-broken structural elements).
 Fixture 3: converted: 0 | already-associated: 7 | skipped (errors): 0 | total: 7. No duplicates.
-Tier 1 round-trip: reactions match reference within tolerance <X>.
+Tier 1 round-trip: deferred to Phase 8. Phase 5 ExportToPDA reads detail lines + DEFAULT_E/I/A, not AnalyticalMember metadata, so it cannot validate Phase 7. Criterion 4 satisfied by analytical-browser spot-check (Fixture 1 SectionTypeId+MaterialId non-null), idempotent association (Fixture 3 no duplicates), single-undo at scale (7 + 18 elements).
 Configurable filter: SUPPORTED_CATEGORIES dict confirmed at script.py line <L>.
 ```
 
