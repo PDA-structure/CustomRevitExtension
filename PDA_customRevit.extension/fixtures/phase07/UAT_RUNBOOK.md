@@ -49,7 +49,7 @@ All elements processed successfully.
 ### Expected post-conditions
 
 - Analytical Model browser shows 7 `AnalyticalMember` instances.
-- Each AnalyticalMember has a non-null `SectionTypeId` and `MaterialId` (D-10 read-back; the D-11 reversed `AddAssociation` path proves out section + material preservation).
+- Each AnalyticalMember has a non-null `SectionTypeId` and `MaterialId`. After `AddAssociation`, `_convert_one` explicitly assigns `analytical.SectionTypeId = elem.Symbol.Id` and `analytical.MaterialId = elem.StructuralMaterialId`; the D-10 read-back is the safety net for genuinely missing source data or silent setter failures, not a propagation check (`AddAssociation` does NOT propagate section/material — empirically confirmed in debug session `convert-missing-section-false`, 2026-05-02).
 - Each AnalyticalMember is 1:1 associated with its physical element (verify via the analytical browser's parent/child link, or by selecting an AnalyticalMember and using `Highlight Physical`).
 
 ### Single-undo check (Pitfall 5: TransactionGroup.Assimilate, not Commit)

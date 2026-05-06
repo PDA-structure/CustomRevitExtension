@@ -137,13 +137,20 @@ def _structural_type(doc, physical_id):
 
 # -- Per-element conversion (D-11 reversed: Create + AddAssociation) ----------
 def _convert_one(doc, physical_id):
-    """D-11 (reversed 2026-04-29): AnalyticalMember.Create + AddAssociation.
-    The previously-assumed single-call factory does NOT exist as a public API
-    method; this two-call pattern is the only verifiable physical-to-analytical
-    conversion path (verified by absence: revitapidocs 2024/2025/2025.3, GitHub,
-    Autodesk Help). Caller MUST have an active Transaction. Returns the new
-    analytical ElementId. Raises ValueError(skip_reason) when curve derivation
-    fails -- caller routes the skip via its except clause."""
+    """D-11 (reversed 2026-04-29): AnalyticalMember.Create + AddAssociation,
+    plus explicit section/material propagation.
+
+    AnalyticalMember.Create produces an analytical with SectionTypeId and
+    MaterialId both InvalidElementId. AddAssociation only links the two
+    ElementIds for round-trip identity -- it does NOT copy section or material
+    (verified empirically 2026-05-02 via Capture.JPG bypass run: 3/3 created
+    analyticals had Section = <None>). The fix is to assign SectionTypeId from
+    the physical's FamilySymbol and MaterialId from its StructuralMaterialId
+    immediately after AddAssociation, inside the same transaction.
+
+    Caller MUST have an active Transaction. Returns the new analytical
+    ElementId. Raises ValueError(skip_reason) when curve derivation fails --
+    caller routes the skip via its except clause."""
     elem = doc.GetElement(physical_id)
     curve, skip_reason = _derive_curve(elem)
     if skip_reason is not None:
@@ -151,15 +158,23 @@ def _convert_one(doc, physical_id):
     analytical = AnalyticalMember.Create(doc, curve)
     manager = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
     manager.AddAssociation(analytical.Id, physical_id)
+    symbol_id = elem.Symbol.Id
+    if symbol_id != ElementId.InvalidElementId:
+        analytical.SectionTypeId = symbol_id
+    material_id = elem.StructuralMaterialId
+    if material_id != ElementId.InvalidElementId:
+        analytical.MaterialId = material_id
     return analytical.Id
 
 # -- Read-back verification (D-10; Pitfall 10) --------------------------------
 def _verify_section_and_material(doc, analytical_id):
-    """D-10: confirm section + material associated post-AddAssociation, pre-commit.
-    AddAssociation propagates section/material from the physical element automatically;
-    a null result here means the source element had nothing to propagate.
-    CRITICAL: this MUST be called BEFORE tx.Commit(); once committed, only a fresh
-    transaction can roll back the orphan analytical member (Pitfall 10)."""
+    """D-10 safety net: confirm section + material were successfully assigned by
+    _convert_one, pre-commit. A False result means the physical's Symbol.Id or
+    StructuralMaterialId was InvalidElementId (genuinely missing source data),
+    or the .NET property setter silently failed -- either way, skip with
+    'missing-section' and roll back the orphan analytical.
+    CRITICAL: this MUST be called BEFORE tx.Commit(); once committed, only a
+    fresh transaction can roll back the orphan analytical member (Pitfall 10)."""
     am = doc.GetElement(analytical_id)
     if am is None:
         return False
